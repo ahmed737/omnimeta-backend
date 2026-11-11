@@ -6,18 +6,22 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// Meta Webhook Verification Token
 const VERIFY_TOKEN = 'omnimeta_secret_token_2026';
+
+// Facebook Page Access Token for page "ASIL"
+const PAGE_ACCESS_TOKEN = 'EAATOUhl4sZAcBSZBfFeVxFm7xLRHoVEE1LerXwYQdC9op0BaAEuunTPDzQIwzUoZAmnZAxKPU28P2AL061R4MUSisgvwha7fpDBZANisAZCuFwGgrGuWK6LncqNwJuiMrZAS0xEw5q0CUDZBdZATqh5lP8njzPqBOedEgWwkZCQVEzZBjiPk2G2gx7aGAB2Df3c3q7aPNDO6QZDZD';
+
 const PHONE_NUMBER_ID = '1376320848907133';
+const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN || '';
 
-// الصق رمز الوصول (Token) الخاص بك هنا بين علامتي التنصيص
-const ACCESS_TOKEN = 'EAATOUhl4sZAcBSw4JHZCeoj74fZAlsGD3cLLlZAJ1sTjgQCZB90Truby0T2tzvRtgoQUianmhzrZBU2zEdlw5Cea6lrXjlggMcndEQVOTihvzjPQ9qcCYEr8PfJBZArhgPs1i3OHBc1RUtjIR3obe7WKzobNLU9n3JZCUGZCDAVlq6d9KTRWE0mJfdmZAJ7xtCwgZDZD';
+const conversationStates = {};
 
-// مسار الصفحة الرئيسية
 app.get('/', (req, res) => {
-  res.send('OmniMeta Backend is running live on Vercel!');
+  res.send('OmniMeta Backend is running live on Vercel! Connected to Page ASIL.');
 });
 
-// 1. التحقق من الويب هوك (يدعم كلا الرابطين)
+// 1. Meta Webhook Verification
 app.get(['/webhook', '/api/webhook'], (req, res) => {
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
@@ -30,43 +34,83 @@ app.get(['/webhook', '/api/webhook'], (req, res) => {
   return res.sendStatus(403);
 });
 
-// 2. استقبال الرسائل والرد الآلي عليها فوراً
+// 2. Incoming Messages Webhook
 app.post(['/webhook', '/api/webhook'], async (req, res) => {
   res.status(200).send('EVENT_RECEIVED');
 
   try {
     const body = req.body;
-    if (body.entry && body.entry[0].changes && body.entry[0].changes[0].value.messages) {
-      const message = body.entry[0].changes[0].value.messages[0];
-      const from = message.from;
-      const text = (message.text ? message.text.body : '').toLowerCase();
 
-      let replyText = null;
-      if (text.includes('سعر') || text.includes('بكام') || text.includes('تكلفة')) {
-        replyText = 'أهلاً بك يا فندم! أسعار باقاتنا تبدأ من 350 جنيه مع خصم خاص ومتاح الدفع عند الاستلام 💳';
-      } else if (text.includes('شحن') || text.includes('توصيل')) {
-        replyText = 'الشحن متاح لجميع محافظات جمهورية مصر العربية خلال 48 ساعة فقط 🚚';
-      } else {
-        replyText = 'مرحباً بك! تم استلام رسالتك عبر البوت الذكي، وسنتواصل معك فوراً 😊';
+    // Handle Facebook Messenger & Instagram Messages
+    if (body.object === 'page' || body.object === 'instagram') {
+      if (body.entry && body.entry[0] && body.entry[0].messaging) {
+        const messaging = body.entry[0].messaging[0];
+        const senderId = messaging.sender ? messaging.sender.id : null;
+        const message = messaging.message;
+
+        if (senderId && message && message.text && !message.is_echo) {
+          await handleIncomingMessage('facebook', senderId, message.text);
+        }
       }
-
-      if (replyText) {
-        await axios.post(`https://graph.facebook.com/v19.0/${PHONE_NUMBER_ID}/messages`, {
-          messaging_product: 'whatsapp',
-          to: from,
-          type: 'text',
-          text: { body: replyText }
-        }, {
-          headers: {
-            'Authorization': `Bearer ${ACCESS_TOKEN}`,
-            'Content-Type': 'application/json'
-          }
-        });
+    } 
+    // Handle WhatsApp Messages
+    else if (body.object === 'whatsapp_business_account') {
+      if (body.entry && body.entry[0].changes && body.entry[0].changes[0].value.messages) {
+        const message = body.entry[0].changes[0].value.messages[0];
+        const from = message.from;
+        const text = message.text ? message.text.body : '';
+        if (from && text) {
+          await handleIncomingMessage('whatsapp', from, text);
+        }
       }
     }
   } catch (err) {
-    console.error('Error sending reply:', err.message);
+    console.error('Error processing webhook:', err.message);
   }
+});
+
+// 3. Smart Handover & Auto-Reply Dispatcher
+async function handleIncomingMessage(platform, senderId, text) {
+  const state = conversationStates[senderId] || { botPaused: false };
+
+  if (state.botPaused) {
+    console.log(`Agent Handover active for ${senderId}. Skipping bot reply.`);
+    return;
+  }
+
+  const lower = (text || '').toLowerCase();
+  let replyText = null;
+
+  if (lower.includes('سعر') || lower.includes('بكام') || lower.includes('تكلفة') || lower.includes('كام')) {
+    replyText = 'أهلاً بك يا فندم في صفحة ASIL! أسعار باقاتنا تبدأ من 350 جنيه مع خصم خاص ومتاح الدفع عند الاستلام 💳';
+  } else if (lower.includes('شحن') || lower.includes('توصيل') || lower.includes('ميعاد')) {
+    replyText = 'الشحن متاح لجميع محافظات جمهورية مصر العربية خلال 48 ساعة فقط والدفع عند الاستلام 🚚';
+  } else if (lower.includes('سلام') || lower.includes('مرحبا') || lower.includes('أهلا') || lower.includes('مساء') || lower.includes('صباح')) {
+    replyText = 'مرحباً بك في صفحة ASIL! يسعدنا تواصلك معنا، كيف يمكننا مساعدتك اليوم؟ 😊';
+  } else {
+    replyText = 'أهلاً بك في ASIL! تم استلام رسالتك وسيقوم أحد ممثلي خدمة العملاء بالرد عليك فوراً.';
+  }
+
+  if (replyText) {
+    if (platform === 'facebook' && PAGE_ACCESS_TOKEN) {
+      try {
+        await axios.post(`https://graph.facebook.com/v19.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
+          recipient: { id: senderId },
+          message: { text: replyText }
+        });
+      } catch (fbErr) {
+        console.error('Error sending FB reply:', fbErr.response ? fbErr.response.data : fbErr.message);
+      }
+    }
+  }
+}
+
+// 4. Handover API
+app.post('/api/handover', (req, res) => {
+  const { senderId, pauseBot } = req.body;
+  if (!senderId) return res.status(400).send('Missing senderId');
+  conversationStates[senderId] = { botPaused: !!pauseBot };
+  res.json({ success: true, state: conversationStates[senderId] });
 });
 
 module.exports = app;
