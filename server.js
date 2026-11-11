@@ -1,5 +1,4 @@
 const express = require('express');
-const axios = require('axios');
 const cors = require('cors');
 
 const app = express();
@@ -34,10 +33,8 @@ app.get(['/webhook', '/api/webhook'], (req, res) => {
   return res.sendStatus(403);
 });
 
-// 2. Incoming Messages Webhook
+// 2. Incoming Messages Webhook (Fixed: Awaits message sending before closing)
 app.post(['/webhook', '/api/webhook'], async (req, res) => {
-  res.status(200).send('EVENT_RECEIVED');
-
   try {
     const body = req.body;
 
@@ -49,6 +46,7 @@ app.post(['/webhook', '/api/webhook'], async (req, res) => {
         const message = messaging.message;
 
         if (senderId && message && message.text && !message.is_echo) {
+          console.log(`Received message: ${message.text} from ${senderId}`);
           await handleIncomingMessage('facebook', senderId, message.text);
         }
       }
@@ -67,6 +65,9 @@ app.post(['/webhook', '/api/webhook'], async (req, res) => {
   } catch (err) {
     console.error('Error processing webhook:', err.message);
   }
+
+  // إغلاق الطلب بعد إتمام الإرسال لمنع تجمد Vercel
+  return res.status(200).send('EVENT_RECEIVED');
 });
 
 // 3. Smart Handover & Auto-Reply Dispatcher
@@ -88,18 +89,24 @@ async function handleIncomingMessage(platform, senderId, text) {
   } else if (lower.includes('سلام') || lower.includes('مرحبا') || lower.includes('أهلا') || lower.includes('مساء') || lower.includes('صباح')) {
     replyText = 'مرحباً بك في صفحة ASIL! يسعدنا تواصلك معنا، كيف يمكننا مساعدتك اليوم؟ 😊';
   } else {
-    replyText = 'أهلاً بك في ASIL! تم استلام رسالتك وسيقوم أحد ممثلي خدمة العملاء بالرد عليك فوراً.';
+    replyText = 'أهلاً بك في صفحة ASIL! تم استلام رسالتك وسيتواصل معك أحد ممثلي خدمة العملاء فوراً.';
   }
 
   if (replyText) {
     if (platform === 'facebook' && PAGE_ACCESS_TOKEN) {
       try {
-        await axios.post(`https://graph.facebook.com/v19.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
-          recipient: { id: senderId },
-          message: { text: replyText }
+        const response = await fetch(`https://graph.facebook.com/v19.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            recipient: { id: senderId },
+            message: { text: replyText }
+          })
         });
+        const result = await response.json();
+        console.log('FB Messenger reply result:', JSON.stringify(result));
       } catch (fbErr) {
-        console.error('Error sending FB reply:', fbErr.response ? fbErr.response.data : fbErr.message);
+        console.error('Error sending FB reply:', fbErr.message);
       }
     }
   }
